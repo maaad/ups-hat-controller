@@ -1,0 +1,42 @@
+[Unit]
+Description=UPS HAT Controller - Waveshare UPS HAT (E) monitoring and safe shutdown
+After=multi-user.target
+Wants=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Optional: load configuration from environment file
+# Create /etc/ups-hat-controller/ups-hat-controller.env with lines like:
+#   I2C_BUS=1
+#   I2C_ADDR=45
+#   PUBLISH_RATE_HZ=1.0
+#   SHUTDOWN_DELAY_SEC=60
+#   LOW_VOLTAGE_THRESHOLD=3150
+#   ENABLE_SYSLOG=true
+EnvironmentFile=-/etc/ups-hat-controller/ups-hat-controller.env
+
+# Run the executable
+ExecStart=/usr/local/bin/ups_hat_controller
+
+# Journal integration
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ups-hat-controller
+
+# Robustness
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+SendSIGKILL=no
+
+# Security (reasonable defaults for hardware access)
+# If not running as root, ensure user is in 'i2c' group and adjust protections accordingly.
+# ProtectSystem=full
+# ProtectHome=read-only
+# DeviceAllow=/dev/i2c-1 rw
+
+[Install]
+WantedBy=multi-user.target
+
