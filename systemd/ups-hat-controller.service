@@ -12,6 +12,7 @@ Type=simple
 #   I2C_ADDR=45
 #   PUBLISH_RATE_HZ=1.0
 #   SHUTDOWN_DELAY_SEC=60
+#   SHUTDOWN_COMMAND=systemctl poweroff
 #   LOW_VOLTAGE_THRESHOLD=3150
 #   ENABLE_SYSLOG=true
 EnvironmentFile=-/etc/ups-hat-controller/ups-hat-controller.env
@@ -39,4 +40,3 @@ SendSIGKILL=no
 
 [Install]
 WantedBy=multi-user.target
-

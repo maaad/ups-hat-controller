@@ -199,10 +199,10 @@ void UpsHatMonitor::shutdownSystem() {
         logMessage(LOG_INFO, "Sending shutdown command to UPS HAT");
         driver_->shutdown();
 
-        logMessage(LOG_INFO, "Executing system shutdown");
-        int result = system("systemctl poweroff");
+        logMessage(LOG_INFO, "Executing system shutdown command: " + config_.shutdown_command);
+        int result = system(config_.shutdown_command.c_str());
         if (result != 0) {
-            logMessage(LOG_WARNING, "systemctl poweroff returned non-zero exit code");
+            logMessage(LOG_WARNING, "Shutdown command returned non-zero exit code: " + config_.shutdown_command);
         }
     } catch (const std::exception& e) {
         logMessage(LOG_ERR, std::string("Failed to initiate shutdown: ") + e.what());
@@ -346,4 +346,3 @@ void UpsHatMonitor::run() {
 
     logMessage(LOG_INFO, "UPS HAT monitoring loop stopped");
 }
-

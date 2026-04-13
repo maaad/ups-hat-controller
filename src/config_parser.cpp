@@ -66,6 +66,9 @@ UpsHatConfig ConfigParser::parseConfigFile(const std::string& config_path) {
     if (kv_map.find("SHUTDOWN_DELAY_SEC") != kv_map.end()) {
         config.shutdown_delay_sec = std::stoi(kv_map["SHUTDOWN_DELAY_SEC"]);
     }
+    if (kv_map.find("SHUTDOWN_COMMAND") != kv_map.end()) {
+        config.shutdown_command = kv_map["SHUTDOWN_COMMAND"];
+    }
     if (kv_map.find("LOW_VOLTAGE_THRESHOLD") != kv_map.end()) {
         config.low_voltage_threshold_mv = static_cast<uint16_t>(std::stoi(kv_map["LOW_VOLTAGE_THRESHOLD"]));
     }
@@ -98,6 +101,9 @@ UpsHatConfig ConfigParser::parseEnvironment() {
     if ((env_val = std::getenv("SHUTDOWN_DELAY_SEC")) != nullptr) {
         config.shutdown_delay_sec = std::stoi(env_val);
     }
+    if ((env_val = std::getenv("SHUTDOWN_COMMAND")) != nullptr) {
+        config.shutdown_command = env_val;
+    }
     if ((env_val = std::getenv("LOW_VOLTAGE_THRESHOLD")) != nullptr) {
         config.low_voltage_threshold_mv = static_cast<uint16_t>(std::stoi(env_val));
     }
@@ -117,4 +123,3 @@ UpsHatConfig ConfigParser::getDefaultConfig() {
     UpsHatConfig config;
     return config;
 }
-

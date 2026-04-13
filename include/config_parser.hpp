@@ -16,6 +16,7 @@ struct UpsHatConfig {
     uint8_t i2c_addr = 0x2d;
     double publish_rate_hz = 1.0;
     int shutdown_delay_sec = 60;
+    std::string shutdown_command = "systemctl poweroff";
     uint16_t low_voltage_threshold_mv = 3150;
     int low_voltage_threshold_count = 30;
     bool enable_syslog = true;
@@ -33,4 +34,3 @@ private:
 };
 
 #endif // CONFIG_PARSER_HPP
-

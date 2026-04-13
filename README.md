@@ -57,6 +57,7 @@ Configuration can be provided via:
 - `I2C_ADDR`: I2C device address in decimal (default: 45 = 0x2d)
 - `PUBLISH_RATE_HZ`: Monitoring rate in Hz (default: 1.0)
 - `SHUTDOWN_DELAY_SEC`: Delay before shutdown on power loss in seconds (default: 60)
+- `SHUTDOWN_COMMAND`: Command executed to power off the system (default: `systemctl poweroff`)
 - `LOW_VOLTAGE_THRESHOLD`: Low voltage threshold in millivolts (default: 3150)
 - `LOW_VOLTAGE_THRESHOLD_COUNT`: Number of consecutive low voltage detections before shutdown (default: 30)
 - `ENABLE_SYSLOG`: Enable syslog logging (default: true)
@@ -123,7 +124,7 @@ The controller will initiate system shutdown when:
 
 Shutdown is performed by:
 1. Sending shutdown command to UPS HAT (register 0x01 = 0x55)
-2. Executing `systemctl poweroff`
+2. Executing configured command from `SHUTDOWN_COMMAND` (default: `systemctl poweroff`)
 
 ## Charge States
 
