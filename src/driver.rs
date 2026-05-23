@@ -92,7 +92,10 @@ impl UpsHatDriver {
         // SAFETY: take ownership of raw fd; file will not be used afterwards.
         let owned_fd = unsafe { OwnedFd::from_raw_fd(file.into_raw_fd()) };
 
-        Ok(Self { fd: owned_fd, i2c_addr })
+        Ok(Self {
+            fd: owned_fd,
+            i2c_addr,
+        })
     }
 
     fn read_register(&self, register_addr: u8, len: usize) -> Result<Vec<u8>, String> {

@@ -53,14 +53,22 @@ Supported keys (same as previous C++ version):
 
 ## Install
 
-Copy binary and config:
+Create symlinks in system paths (recommended for development):
 
 ```bash
-sudo install -m 755 target/release/ups_hat_controller /usr/local/bin/ups_hat_controller
-sudo install -d /etc/ups-hat-controller
-sudo install -m 644 config/ups-hat-controller.conf /etc/ups-hat-controller/ups-hat-controller.conf
-sudo install -m 644 systemd/ups-hat-controller.service /etc/systemd/system/ups-hat-controller.service
-sudo systemctl daemon-reload
+make install-links
+```
+
+This creates links:
+- `/etc/ups-hat-controller/ups-hat-controller.env` -> `config/ups-hat-controller.env`
+- `/usr/local/bin/ups_hat_controller` -> `target/release/ups_hat_controller`
+- `/etc/systemd/system/ups-hat-controller.service` -> `systemd/ups-hat-controller.service`
+
+Useful commands:
+
+```bash
+make status
+make uninstall-links
 sudo systemctl enable --now ups-hat-controller.service
 ```
 
