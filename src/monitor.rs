@@ -32,7 +32,8 @@ pub struct UpsHatMonitor<T: UpsDevice> {
     last_thermal_update: Option<Instant>,
     consecutive_read_errors: u32,
     last_read_error_log: Option<Instant>,
-    shutdown_initiated: bool,
+    host_shutdown_triggered: bool,
+    dry_run_shutdown_latched: bool,
 }
 
 impl<T: UpsDevice> UpsHatMonitor<T> {
@@ -52,7 +53,8 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             last_thermal_update: None,
             consecutive_read_errors: 0,
             last_read_error_log: None,
-            shutdown_initiated: false,
+            host_shutdown_triggered: false,
+            dry_run_shutdown_latched: false,
         }
     }
 
@@ -75,7 +77,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         let mut prev_on_mains = true;
         let mut prev_charge_state = u8::MAX;
 
-        while !self.stop_flag.load(Ordering::SeqCst) && !self.shutdown_initiated {
+        while !self.stop_flag.load(Ordering::SeqCst) && !self.host_shutdown_triggered {
             let loop_start = Instant::now();
             self.refresh_thermal_if_needed(loop_start);
 
@@ -111,8 +113,9 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         }
 
         info!(
-            "monitor_stop shutdown_initiated={}",
-            self.shutdown_initiated
+            "monitor_stop host_shutdown_triggered={} dry_run_shutdown_latched={}",
+            self.host_shutdown_triggered,
+            self.dry_run_shutdown_latched
         );
     }
 
@@ -174,6 +177,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
                 );
             }
             self.low_voltage_count = 0;
+            self.dry_run_shutdown_latched = false;
             return;
         }
 
@@ -252,24 +256,32 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         self.power_loss_time = None;
         self.low_voltage_count = 0;
         self.last_battery_status_log = None;
+        self.dry_run_shutdown_latched = false;
         info!("power_restored outage_sec={elapsed_sec}");
     }
 
     fn initiate_shutdown(&mut self, reason: &'static str) {
-        if self.shutdown_initiated {
+        if self.host_shutdown_triggered {
             return;
         }
 
-        self.shutdown_initiated = true;
+        if self.config.dry_run {
+            if !self.dry_run_shutdown_latched {
+                error!(
+                    "shutdown_intent reason={} dry_run={} command=\"{}\"",
+                    reason, self.config.dry_run, self.config.shutdown_command
+                );
+                warn!("shutdown_suppressed reason={} mode=dry_run", reason);
+                self.dry_run_shutdown_latched = true;
+            }
+            return;
+        }
+
+        self.host_shutdown_triggered = true;
         error!(
             "shutdown_intent reason={} dry_run={} command=\"{}\"",
             reason, self.config.dry_run, self.config.shutdown_command
         );
-
-        if self.config.dry_run {
-            warn!("shutdown_suppressed reason={} mode=dry_run", reason);
-            return;
-        }
 
         if let Err(e) = self.driver.shutdown() {
             error!("ups_shutdown_command_failed error={e}");
