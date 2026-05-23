@@ -8,14 +8,31 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const THERMAL_REFRESH_PERIOD: Duration = Duration::from_secs(10);
+const BATTERY_HEARTBEAT_PERIOD: Duration = Duration::from_secs(60);
+const READ_ERROR_LOG_PERIOD: Duration = Duration::from_secs(30);
+const MIN_RATE_HZ: f64 = 0.1;
+const MAX_RATE_HZ: f64 = 20.0;
+
+#[derive(Clone, Copy)]
+struct ThermalSnapshot {
+    cooling_state: Option<i32>,
+    cpu_temp_c: Option<f64>,
+}
+
 pub struct UpsHatMonitor<T: UpsDevice> {
     config: UpsHatConfig,
     driver: T,
     stop_flag: Arc<AtomicBool>,
     on_mains: bool,
     power_loss_time: Option<Instant>,
-    last_battery_status_log: Option<Instant>,
     low_voltage_count: i32,
+    last_battery_status_log: Option<Instant>,
+    thermal_cache: ThermalSnapshot,
+    last_thermal_update: Option<Instant>,
+    consecutive_read_errors: u32,
+    last_read_error_log: Option<Instant>,
+    shutdown_initiated: bool,
 }
 
 impl<T: UpsDevice> UpsHatMonitor<T> {
@@ -26,70 +43,105 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             stop_flag,
             on_mains: true,
             power_loss_time: None,
-            last_battery_status_log: None,
             low_voltage_count: 0,
+            last_battery_status_log: None,
+            thermal_cache: ThermalSnapshot {
+                cooling_state: None,
+                cpu_temp_c: None,
+            },
+            last_thermal_update: None,
+            consecutive_read_errors: 0,
+            last_read_error_log: None,
+            shutdown_initiated: false,
         }
     }
 
     pub fn run(&mut self) {
-        let period = Duration::from_millis((1000.0 / self.config.publish_rate_hz.max(0.1)) as u64);
+        let rate = self.config.publish_rate_hz.clamp(MIN_RATE_HZ, MAX_RATE_HZ);
+        let period = Duration::from_secs_f64(1.0 / rate);
+        let mut next_tick = Instant::now();
+
+        info!(
+            "monitor_start i2c_bus={} i2c_addr={} rate_hz={:.3} dry_run={} shutdown_delay_sec={} low_voltage_threshold_mv={} low_voltage_threshold_count={}",
+            self.config.i2c_bus,
+            self.config.i2c_addr,
+            rate,
+            self.config.dry_run,
+            self.config.shutdown_delay_sec,
+            self.config.low_voltage_threshold_mv,
+            self.config.low_voltage_threshold_count
+        );
+
         let mut prev_on_mains = true;
         let mut prev_charge_state = u8::MAX;
 
-        info!("Starting UPS HAT monitoring loop");
+        while !self.stop_flag.load(Ordering::SeqCst) && !self.shutdown_initiated {
+            let loop_start = Instant::now();
+            self.refresh_thermal_if_needed(loop_start);
 
-        while !self.stop_flag.load(Ordering::SeqCst) {
-            match self.read_and_process(&mut prev_on_mains, &mut prev_charge_state) {
-                Ok(should_break) => {
-                    if should_break {
-                        break;
+            match self.read_and_process(loop_start, &mut prev_on_mains, &mut prev_charge_state) {
+                Ok(()) => {
+                    if self.consecutive_read_errors > 0 {
+                        info!(
+                            "ups_read_recovered consecutive_errors={}",
+                            self.consecutive_read_errors
+                        );
+                        self.consecutive_read_errors = 0;
+                        self.last_read_error_log = None;
                     }
                 }
-                Err(e) => error!("UPS read failed: {e}"),
+                Err(e) => self.handle_read_error(loop_start, &e),
             }
 
-            thread::sleep(period);
+            next_tick += period;
+            let now = Instant::now();
+            if now < next_tick {
+                thread::sleep(next_tick - now);
+            } else {
+                let lag = now.duration_since(next_tick);
+                if lag > period {
+                    warn!(
+                        "monitor_loop_lag lag_ms={} period_ms={}",
+                        lag.as_millis(),
+                        period.as_millis()
+                    );
+                }
+                next_tick = now;
+            }
         }
 
-        info!("UPS HAT monitoring loop stopped");
+        info!(
+            "monitor_stop shutdown_initiated={}",
+            self.shutdown_initiated
+        );
     }
 
     fn read_and_process(
         &mut self,
+        now: Instant,
         prev_on_mains: &mut bool,
         prev_charge_state: &mut u8,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         let charging_status = self.driver.read_charging_status()?;
         let vbus_data = self.driver.read_vbus()?;
         let battery_data = self.driver.read_battery()?;
         let cell_voltages = self.driver.read_cells()?;
 
-        let on_mains_now = charging_status.charging || charging_status.fast_charging || charging_status.vbus_powered;
+        let on_mains_now = charging_status.charging
+            || charging_status.fast_charging
+            || charging_status.vbus_powered;
 
         if on_mains_now != self.on_mains {
             self.on_mains = on_mains_now;
             if !self.on_mains {
-                self.handle_power_loss();
+                self.handle_power_loss(now);
             } else {
                 self.handle_power_restored();
             }
         }
 
-        if self.check_low_voltage(cell_voltages, battery_data.current_ma) {
-            self.handle_low_voltage();
-        } else {
-            self.low_voltage_count = 0;
-        }
-
-        if !self.on_mains {
-            if let Some(t0) = self.power_loss_time {
-                if t0.elapsed().as_secs() as i64 >= self.config.shutdown_delay_sec {
-                    error!("Power loss persisted. Shutting down system now.");
-                    self.shutdown_system();
-                    return Ok(true);
-                }
-            }
-        }
+        self.process_low_voltage(cell_voltages, battery_data.current_ma);
+        self.process_power_loss_timeout(now);
 
         self.log_state_changes(
             *prev_on_mains,
@@ -99,19 +151,64 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             battery_data,
         );
 
-        if *prev_on_mains != self.on_mains {
-            *prev_on_mains = self.on_mains;
-        }
-        if *prev_charge_state != charging_status.charge_state {
-            *prev_charge_state = charging_status.charge_state;
-        }
+        *prev_on_mains = self.on_mains;
+        *prev_charge_state = charging_status.charge_state;
 
-        self.log_periodic_battery_status(charging_status, vbus_data, battery_data, cell_voltages);
+        self.log_periodic_battery_status(
+            now,
+            charging_status,
+            vbus_data,
+            battery_data,
+            cell_voltages,
+        );
 
-        Ok(false)
+        Ok(())
     }
 
-    fn check_low_voltage(&self, c: CellVoltages, current_ma: i16) -> bool {
+    fn process_low_voltage(&mut self, cells: CellVoltages, current_ma: i16) {
+        if !self.is_low_voltage(cells, current_ma) {
+            if self.low_voltage_count > 0 {
+                info!(
+                    "low_voltage_recovered consecutive_count={}",
+                    self.low_voltage_count
+                );
+            }
+            self.low_voltage_count = 0;
+            return;
+        }
+
+        self.low_voltage_count += 1;
+        let remaining = (self.config.low_voltage_threshold_count - self.low_voltage_count).max(0);
+
+        warn!(
+            "low_voltage_detected count={} threshold_count={} threshold_mv={} current_ma={}",
+            self.low_voltage_count,
+            self.config.low_voltage_threshold_count,
+            self.config.low_voltage_threshold_mv,
+            current_ma
+        );
+
+        if self.low_voltage_count >= self.config.low_voltage_threshold_count {
+            self.initiate_shutdown("low_voltage_threshold_reached");
+        } else if remaining == 1 || remaining % 5 == 0 {
+            warn!("low_voltage_countdown remaining_cycles={remaining}");
+        }
+    }
+
+    fn process_power_loss_timeout(&mut self, now: Instant) {
+        if self.on_mains {
+            return;
+        }
+        if let Some(start) = self.power_loss_time {
+            let elapsed = now.duration_since(start).as_secs() as i64;
+            let remaining = self.config.shutdown_delay_sec - elapsed;
+            if remaining <= 0 {
+                self.initiate_shutdown("power_loss_timeout");
+            }
+        }
+    }
+
+    fn is_low_voltage(&self, c: CellVoltages, current_ma: i16) -> bool {
         if current_ma >= 50 {
             return false;
         }
@@ -121,48 +218,76 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             || c.cell4_mv < self.config.low_voltage_threshold_mv
     }
 
-    fn handle_power_loss(&mut self) {
-        self.power_loss_time = Some(Instant::now());
-        let msg = format!(
-            "Power loss detected. Scheduling shutdown in {} sec",
-            self.config.shutdown_delay_sec
+    fn handle_power_loss(&mut self, now: Instant) {
+        self.power_loss_time = Some(now);
+        warn!(
+            "power_lost shutdown_in_sec={} dry_run={}",
+            self.config.shutdown_delay_sec, self.config.dry_run
         );
-        warn!("{msg}");
-        let _ = Command::new("sh")
+
+        let wall_msg = format!(
+            "UPS: mains power lost, shutdown scheduled in {} sec{}",
+            self.config.shutdown_delay_sec,
+            if self.config.dry_run {
+                " (dry-run: host shutdown suppressed)"
+            } else {
+                ""
+            }
+        );
+
+        if let Err(e) = Command::new("sh")
             .arg("-c")
-            .arg(format!("echo \"{}\" | wall", msg))
-            .status();
+            .arg(format!("echo \"{}\" | wall", wall_msg))
+            .status()
+        {
+            warn!("wall_notify_failed error={e}");
+        }
     }
 
     fn handle_power_restored(&mut self) {
+        let elapsed_sec = self
+            .power_loss_time
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or_default();
         self.power_loss_time = None;
-        info!("Mains power restored. Cancelling pending shutdown");
+        self.low_voltage_count = 0;
+        self.last_battery_status_log = None;
+        info!("power_restored outage_sec={elapsed_sec}");
     }
 
-    fn handle_low_voltage(&mut self) {
-        self.low_voltage_count += 1;
-        if self.low_voltage_count >= self.config.low_voltage_threshold_count {
-            error!("Low voltage detected. Shutting down system now.");
-            self.shutdown_system();
-        } else {
-            let remaining_time = 60 - (2 * self.low_voltage_count);
-            warn!(
-                "Voltage Low, please charge in time, otherwise it will shut down in {} s",
-                remaining_time
-            );
+    fn initiate_shutdown(&mut self, reason: &'static str) {
+        if self.shutdown_initiated {
+            return;
         }
-    }
 
-    fn shutdown_system(&self) {
+        self.shutdown_initiated = true;
+        error!(
+            "shutdown_intent reason={} dry_run={} command=\"{}\"",
+            reason, self.config.dry_run, self.config.shutdown_command
+        );
+
+        if self.config.dry_run {
+            warn!("shutdown_suppressed reason={} mode=dry_run", reason);
+            return;
+        }
+
         if let Err(e) = self.driver.shutdown() {
-            error!("Failed to send shutdown command to UPS HAT: {e}");
+            error!("ups_shutdown_command_failed error={e}");
+        } else {
+            info!("ups_shutdown_command_sent register=0x01 value=0x55");
         }
-        let status = Command::new("sh")
+
+        match Command::new("sh")
             .arg("-c")
             .arg(&self.config.shutdown_command)
-            .status();
-        if let Err(e) = status {
-            warn!("Shutdown command failed: {e}");
+            .status()
+        {
+            Ok(status) => {
+                if !status.success() {
+                    warn!("host_shutdown_command_nonzero status={status}");
+                }
+            }
+            Err(e) => warn!("host_shutdown_command_failed error={e}"),
         }
     }
 
@@ -176,88 +301,121 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
     ) {
         let power_changed = prev_on_mains != self.on_mains;
         let charge_changed = prev_charge_state != charging.charge_state;
+
         if !power_changed && !charge_changed {
             return;
         }
 
-        let mut parts = Vec::new();
-        if power_changed {
-            let prev = if prev_on_mains { "mains" } else { "battery" };
-            let now = if self.on_mains { "mains" } else { "battery" };
-            parts.push(format!("Power: {prev} -> {now}"));
+        let power = if self.on_mains { "mains" } else { "battery" };
+        let prev_power = if prev_on_mains { "mains" } else { "battery" };
+        let charge = charge_state_name(charging.charge_state);
+
+        if prev_charge_state == u8::MAX {
+            info!(
+                "state_change power={} prev_power={} charge={} charge_code={} metrics=\"{}\"",
+                power,
+                prev_power,
+                charge,
+                charging.charge_state,
+                format_brief_metrics(vbus, batt)
+            );
+        } else {
+            info!(
+                "state_change power={} prev_power={} charge={} prev_charge={} charge_code={} prev_charge_code={} metrics=\"{}\"",
+                power,
+                prev_power,
+                charge,
+                charge_state_name(prev_charge_state),
+                charging.charge_state,
+                prev_charge_state,
+                format_brief_metrics(vbus, batt)
+            );
         }
-        if charge_changed {
-            if prev_charge_state == u8::MAX {
-                parts.push(format!(
-                    "Charge: {} ({})",
-                    charge_state_name(charging.charge_state),
-                    charging.charge_state
-                ));
-            } else {
-                parts.push(format!(
-                    "Charge: {} ({}) -> {} ({})",
-                    charge_state_name(prev_charge_state),
-                    prev_charge_state,
-                    charge_state_name(charging.charge_state),
-                    charging.charge_state
-                ));
-            }
-        }
-        parts.push(format_brief_metrics(vbus, batt));
-        info!("{}", parts.join(" | "));
     }
 
     fn log_periodic_battery_status(
         &mut self,
+        now: Instant,
         charging: ChargingStatus,
         vbus: VbusData,
         batt: BatteryData,
         cells: CellVoltages,
     ) {
-        if !self.on_mains {
-            let now = Instant::now();
-            let should_log = match self.last_battery_status_log {
-                None => true,
-                Some(t0) => now.duration_since(t0).as_secs() >= 60,
-            };
-
-            if should_log {
-                self.last_battery_status_log = Some(now);
-                let cooling = read_sysfs_int("/sys/class/thermal/cooling_device0/cur_state");
-                let cpu = read_sysfs_double("/sys/class/hwmon/hwmon0/temp1_input", 0.001);
-
-                let mut msg = format!(
-                    "Battery Status: VBUS={:.2}V {}mA, BAT={:.2}V {:+}mA {}%, Cells={:.3}V/{:.3}V/{:.3}V/{:.3}V, Capacity={}mAh, State={} ({})",
-                    vbus.voltage_mv as f64 / 1000.0,
-                    vbus.current_ma,
-                    batt.voltage_mv as f64 / 1000.0,
-                    batt.current_ma,
-                    batt.percent,
-                    cells.cell1_mv as f64 / 1000.0,
-                    cells.cell2_mv as f64 / 1000.0,
-                    cells.cell3_mv as f64 / 1000.0,
-                    cells.cell4_mv as f64 / 1000.0,
-                    batt.remaining_capacity_mah,
-                    charge_state_name(charging.charge_state),
-                    charging.charge_state
-                );
-                if let Some(v) = cooling {
-                    msg.push_str(&format!(", Cooling={v}"));
-                }
-                if let Some(v) = cpu {
-                    msg.push_str(&format!(", CPU={v:.1}°C"));
-                }
-                info!("{msg}");
-            }
-        } else {
+        if self.on_mains {
             self.last_battery_status_log = None;
+            return;
+        }
+
+        let should_log = match self.last_battery_status_log {
+            None => true,
+            Some(t0) => now.duration_since(t0) >= BATTERY_HEARTBEAT_PERIOD,
+        };
+
+        if !should_log {
+            return;
+        }
+
+        self.last_battery_status_log = Some(now);
+
+        let cooling = format_optional_int(self.thermal_cache.cooling_state);
+        let cpu = format_optional_temp(self.thermal_cache.cpu_temp_c);
+        let outage_sec = self
+            .power_loss_time
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or_default();
+
+        info!(
+            "battery_heartbeat outage_sec={} state={} ({}) metrics=\"{}\" cells_mv=[{},{},{},{}] capacity_mah={} cooling_state={} cpu_temp_c={}",
+            outage_sec,
+            charge_state_name(charging.charge_state),
+            charging.charge_state,
+            format_brief_metrics(vbus, batt),
+            cells.cell1_mv,
+            cells.cell2_mv,
+            cells.cell3_mv,
+            cells.cell4_mv,
+            batt.remaining_capacity_mah,
+            cooling,
+            cpu
+        );
+    }
+
+    fn refresh_thermal_if_needed(&mut self, now: Instant) {
+        let should_refresh = match self.last_thermal_update {
+            None => true,
+            Some(t0) => now.duration_since(t0) >= THERMAL_REFRESH_PERIOD,
+        };
+        if !should_refresh {
+            return;
+        }
+
+        self.last_thermal_update = Some(now);
+        self.thermal_cache = ThermalSnapshot {
+            cooling_state: read_sysfs_int("/sys/class/thermal/cooling_device0/cur_state"),
+            cpu_temp_c: read_sysfs_double("/sys/class/hwmon/hwmon0/temp1_input", 0.001),
+        };
+    }
+
+    fn handle_read_error(&mut self, now: Instant, error_message: &str) {
+        self.consecutive_read_errors += 1;
+        let should_log = match self.last_read_error_log {
+            None => true,
+            Some(t0) => now.duration_since(t0) >= READ_ERROR_LOG_PERIOD,
+        };
+
+        if should_log {
+            self.last_read_error_log = Some(now);
+            error!(
+                "ups_read_failed consecutive_errors={} message=\"{}\"",
+                self.consecutive_read_errors, error_message
+            );
         }
     }
 }
 
 fn format_brief_metrics(vbus: VbusData, batt: BatteryData) -> String {
     format!(
-        "VBUS={:.2}V {}mA {}mW, BAT={:.2}V {:+}mA {}% (t_dis={}m, t_chg={}m)",
+        "vbus={:.2}V/{}mA/{}mW batt={:.2}V/{:+}mA soc={}%% t_dis={}m t_chg={}m",
         vbus.voltage_mv as f64 / 1000.0,
         vbus.current_ma,
         vbus.power_mw,
@@ -288,4 +446,13 @@ fn read_sysfs_int(path: &str) -> Option<i32> {
 
 fn read_sysfs_double(path: &str, scale: f64) -> Option<f64> {
     read_sysfs_int(path).map(|v| v as f64 * scale)
+}
+
+fn format_optional_int(v: Option<i32>) -> String {
+    v.map(|x| x.to_string()).unwrap_or_else(|| "na".to_string())
+}
+
+fn format_optional_temp(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.1}"))
+        .unwrap_or_else(|| "na".to_string())
 }

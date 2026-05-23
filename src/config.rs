@@ -12,6 +12,7 @@ pub struct UpsHatConfig {
     pub low_voltage_threshold_mv: u16,
     pub low_voltage_threshold_count: i32,
     pub enable_syslog: bool,
+    pub dry_run: bool,
 }
 
 impl Default for UpsHatConfig {
@@ -25,6 +26,7 @@ impl Default for UpsHatConfig {
             low_voltage_threshold_mv: 3150,
             low_voltage_threshold_count: 30,
             enable_syslog: true,
+            dry_run: false,
         }
     }
 }
@@ -102,5 +104,8 @@ fn apply_map(cfg: &mut UpsHatConfig, map: &HashMap<String, String>) {
     }
     if let Some(v) = map.get("ENABLE_SYSLOG") {
         cfg.enable_syslog = parse_bool(v);
+    }
+    if let Some(v) = map.get("DRY_RUN") {
+        cfg.dry_run = parse_bool(v);
     }
 }

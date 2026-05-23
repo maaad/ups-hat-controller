@@ -16,7 +16,7 @@ use syslog::Formatter3164;
 fn print_help(program: &str) {
     println!("Usage: {program} [--config <path>] [--help]");
     println!("Configuration file: /etc/ups-hat-controller/ups-hat-controller.conf");
-    println!("Environment variables: I2C_BUS, I2C_ADDR, PUBLISH_RATE_HZ, etc.");
+    println!("Environment variables: I2C_BUS, I2C_ADDR, PUBLISH_RATE_HZ, SHUTDOWN_DELAY_SEC, SHUTDOWN_COMMAND, LOW_VOLTAGE_THRESHOLD, LOW_VOLTAGE_THRESHOLD_COUNT, ENABLE_SYSLOG, DRY_RUN");
 }
 
 fn main() {

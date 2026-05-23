@@ -49,6 +49,7 @@ Supported keys (same as previous C++ version):
 - `LOW_VOLTAGE_THRESHOLD` (default: `3150`)
 - `LOW_VOLTAGE_THRESHOLD_COUNT` (default: `30`)
 - `ENABLE_SYSLOG` (default: `true`)
+- `DRY_RUN` (default: `false`) - when `true`, monitoring and alerting continue but host shutdown is suppressed
 
 ## Install
 

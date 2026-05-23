@@ -15,6 +15,7 @@ Type=simple
 #   SHUTDOWN_COMMAND=systemctl poweroff
 #   LOW_VOLTAGE_THRESHOLD=3150
 #   ENABLE_SYSLOG=true
+#   DRY_RUN=false
 EnvironmentFile=-/etc/ups-hat-controller/ups-hat-controller.env
 
 # Run the executable
