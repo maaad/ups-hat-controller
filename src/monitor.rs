@@ -33,7 +33,7 @@ pub struct UpsHatMonitor<T: UpsDevice> {
     consecutive_read_errors: u32,
     last_read_error_log: Option<Instant>,
     host_shutdown_triggered: bool,
-    dry_run_shutdown_latched: bool,
+    dry_run_shutdown_reason_latched: Option<&'static str>,
 }
 
 impl<T: UpsDevice> UpsHatMonitor<T> {
@@ -54,7 +54,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             consecutive_read_errors: 0,
             last_read_error_log: None,
             host_shutdown_triggered: false,
-            dry_run_shutdown_latched: false,
+            dry_run_shutdown_reason_latched: None,
         }
     }
 
@@ -115,7 +115,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         info!(
             "monitor_stop host_shutdown_triggered={} dry_run_shutdown_latched={}",
             self.host_shutdown_triggered,
-            self.dry_run_shutdown_latched
+            self.dry_run_shutdown_reason_latched.is_some()
         );
     }
 
@@ -175,9 +175,9 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
                     "low_voltage_recovered consecutive_count={}",
                     self.low_voltage_count
                 );
+                self.clear_dry_run_latch_if("low_voltage_threshold_reached");
             }
             self.low_voltage_count = 0;
-            self.dry_run_shutdown_latched = false;
             return;
         }
 
@@ -256,7 +256,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         self.power_loss_time = None;
         self.low_voltage_count = 0;
         self.last_battery_status_log = None;
-        self.dry_run_shutdown_latched = false;
+        self.clear_dry_run_latch_if("power_loss_timeout");
         info!("power_restored outage_sec={elapsed_sec}");
     }
 
@@ -266,13 +266,13 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         }
 
         if self.config.dry_run {
-            if !self.dry_run_shutdown_latched {
+            if self.dry_run_shutdown_reason_latched != Some(reason) {
                 error!(
                     "shutdown_intent reason={} dry_run={} command=\"{}\"",
                     reason, self.config.dry_run, self.config.shutdown_command
                 );
                 warn!("shutdown_suppressed reason={} mode=dry_run", reason);
-                self.dry_run_shutdown_latched = true;
+                self.dry_run_shutdown_reason_latched = Some(reason);
             }
             return;
         }
@@ -421,6 +421,12 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
                 "ups_read_failed consecutive_errors={} message=\"{}\"",
                 self.consecutive_read_errors, error_message
             );
+        }
+    }
+
+    fn clear_dry_run_latch_if(&mut self, reason: &'static str) {
+        if self.dry_run_shutdown_reason_latched == Some(reason) {
+            self.dry_run_shutdown_reason_latched = None;
         }
     }
 }
