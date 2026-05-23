@@ -257,12 +257,15 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
 
 fn format_brief_metrics(vbus: VbusData, batt: BatteryData) -> String {
     format!(
-        "VBUS={:.2}V {}mA, BAT={:.2}V {:+}mA {}%",
+        "VBUS={:.2}V {}mA {}mW, BAT={:.2}V {:+}mA {}% (t_dis={}m, t_chg={}m)",
         vbus.voltage_mv as f64 / 1000.0,
         vbus.current_ma,
+        vbus.power_mw,
         batt.voltage_mv as f64 / 1000.0,
         batt.current_ma,
-        batt.percent
+        batt.percent,
+        batt.discharge_time_min,
+        batt.charge_time_min
     )
 }
 
