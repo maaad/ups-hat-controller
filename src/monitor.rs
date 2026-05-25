@@ -331,29 +331,23 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
 
         if prev_charge_state == u8::MAX {
             info!(
-                "state_change power={} prev_power={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {}",
-                power,
+                "state_change: power {} -> {} | charge {}({}) | {}",
                 prev_power,
+                power,
                 charge,
                 charging.charge_state,
-                charging.charging,
-                charging.fast_charging,
-                charging.vbus_powered,
-                format_brief_metrics(vbus, batt)
+                format_brief_metrics(vbus, batt),
             );
         } else {
             info!(
-                "state_change power={} prev_power={} charge_state={} prev_charge_state={} charge_code={} prev_charge_code={} charging={} fast_charging={} vbus_powered={} {}",
-                power,
+                "state_change: power {} -> {} | charge {}({}) -> {}({}) | {}",
                 prev_power,
-                charge,
+                power,
                 charge_state_name(prev_charge_state),
-                charging.charge_state,
                 prev_charge_state,
-                charging.charging,
-                charging.fast_charging,
-                charging.vbus_powered,
-                format_brief_metrics(vbus, batt)
+                charge,
+                charging.charge_state,
+                format_brief_metrics(vbus, batt),
             );
         }
     }
@@ -390,13 +384,10 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             .unwrap_or_default();
 
         info!(
-            "battery_heartbeat outage_sec={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {} cells_mv=[{},{},{},{}] capacity_mah={} cooling_state={} cpu_temp_c={}",
+            "battery_heartbeat: outage={}s | charge {}({}) | {} | cells {} {} {} {} mV | cap={}mAh | cooling={} | cpu={}C",
             outage_sec,
             charge_state_name(charging.charge_state),
             charging.charge_state,
-            charging.charging,
-            charging.fast_charging,
-            charging.vbus_powered,
             format_brief_metrics(vbus, batt),
             cells.cell1_mv,
             cells.cell2_mv,
@@ -435,14 +426,11 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         }
 
         info!(
-            "mains_heartbeat reason={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {}",
+            "mains_heartbeat: {} | charge {}({}) | {}",
             reason.join(","),
             charge_state_name(charging.charge_state),
             charging.charge_state,
-            charging.charging,
-            charging.fast_charging,
-            charging.vbus_powered,
-            format_brief_metrics(vbus, batt)
+            format_brief_metrics(vbus, batt),
         );
 
         self.last_mains_soc = Some(batt.percent);
@@ -490,7 +478,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
 
 fn format_brief_metrics(vbus: VbusData, batt: BatteryData) -> String {
     format!(
-        "vbus_v={:.2} vbus_ma={} vbus_mw={} batt_v={:.2} batt_ma={:+} soc={} t_dis_min={} t_chg_min={}",
+        "VBUS {:.2}V {}mA {}mW | BAT {:.2}V {:+}mA SOC {}% | ETA dis={}m chg={}m",
         vbus.voltage_mv as f64 / 1000.0,
         vbus.current_ma,
         vbus.power_mw,
