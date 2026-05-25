@@ -42,11 +42,21 @@ Typical event types:
 
 - `monitor_start` / `monitor_stop`
 - `state_change`
+- `mains_heartbeat` (on mains when SOC or charge state changes)
 - `power_lost` / `power_restored`
 - `low_voltage_detected` / `low_voltage_countdown` / `low_voltage_recovered`
 - `battery_heartbeat`
 - `shutdown_intent` / `shutdown_suppressed`
 - `ups_read_failed` / `ups_read_recovered`
+
+Charge code decoding (register `0x02`, bits `2..0`, per Waveshare):
+- `0`: Standby
+- `1`: Trickle Charge
+- `2`: Constant Current Charge
+- `3`: Constant Voltage Charge
+- `4`: Charging Pending
+- `5`: Full State
+- `6`: Charge Timeout
 
 View logs:
 

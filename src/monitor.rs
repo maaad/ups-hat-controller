@@ -34,6 +34,8 @@ pub struct UpsHatMonitor<T: UpsDevice> {
     last_read_error_log: Option<Instant>,
     host_shutdown_triggered: bool,
     dry_run_shutdown_reason_latched: Option<&'static str>,
+    last_mains_soc: Option<u16>,
+    last_mains_charge_state: Option<u8>,
 }
 
 impl<T: UpsDevice> UpsHatMonitor<T> {
@@ -55,6 +57,8 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             last_read_error_log: None,
             host_shutdown_triggered: false,
             dry_run_shutdown_reason_latched: None,
+            last_mains_soc: None,
+            last_mains_charge_state: None,
         }
     }
 
@@ -164,6 +168,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             battery_data,
             cell_voltages,
         );
+        self.log_mains_heartbeat_on_change(charging_status, vbus_data, battery_data);
 
         Ok(())
     }
@@ -257,6 +262,8 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
         self.low_voltage_count = 0;
         self.last_battery_status_log = None;
         self.clear_dry_run_latch_if("power_loss_timeout");
+        self.last_mains_soc = None;
+        self.last_mains_charge_state = None;
         info!("power_restored outage_sec={elapsed_sec}");
     }
 
@@ -324,22 +331,28 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
 
         if prev_charge_state == u8::MAX {
             info!(
-                "state_change power={} prev_power={} charge={} charge_code={} metrics=\"{}\"",
+                "state_change power={} prev_power={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {}",
                 power,
                 prev_power,
                 charge,
                 charging.charge_state,
+                charging.charging,
+                charging.fast_charging,
+                charging.vbus_powered,
                 format_brief_metrics(vbus, batt)
             );
         } else {
             info!(
-                "state_change power={} prev_power={} charge={} prev_charge={} charge_code={} prev_charge_code={} metrics=\"{}\"",
+                "state_change power={} prev_power={} charge_state={} prev_charge_state={} charge_code={} prev_charge_code={} charging={} fast_charging={} vbus_powered={} {}",
                 power,
                 prev_power,
                 charge,
                 charge_state_name(prev_charge_state),
                 charging.charge_state,
                 prev_charge_state,
+                charging.charging,
+                charging.fast_charging,
+                charging.vbus_powered,
                 format_brief_metrics(vbus, batt)
             );
         }
@@ -377,10 +390,13 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             .unwrap_or_default();
 
         info!(
-            "battery_heartbeat outage_sec={} state={} ({}) metrics=\"{}\" cells_mv=[{},{},{},{}] capacity_mah={} cooling_state={} cpu_temp_c={}",
+            "battery_heartbeat outage_sec={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {} cells_mv=[{},{},{},{}] capacity_mah={} cooling_state={} cpu_temp_c={}",
             outage_sec,
             charge_state_name(charging.charge_state),
             charging.charge_state,
+            charging.charging,
+            charging.fast_charging,
+            charging.vbus_powered,
             format_brief_metrics(vbus, batt),
             cells.cell1_mv,
             cells.cell2_mv,
@@ -390,6 +406,47 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
             cooling,
             cpu
         );
+    }
+
+    fn log_mains_heartbeat_on_change(
+        &mut self,
+        charging: ChargingStatus,
+        vbus: VbusData,
+        batt: BatteryData,
+    ) {
+        if !self.on_mains {
+            self.last_mains_soc = None;
+            self.last_mains_charge_state = None;
+            return;
+        }
+
+        let soc_changed = self.last_mains_soc != Some(batt.percent);
+        let charge_changed = self.last_mains_charge_state != Some(charging.charge_state);
+        if !(soc_changed || charge_changed) {
+            return;
+        }
+
+        let mut reason = Vec::new();
+        if soc_changed {
+            reason.push("soc_changed");
+        }
+        if charge_changed {
+            reason.push("charge_state_changed");
+        }
+
+        info!(
+            "mains_heartbeat reason={} charge_state={} charge_code={} charging={} fast_charging={} vbus_powered={} {}",
+            reason.join(","),
+            charge_state_name(charging.charge_state),
+            charging.charge_state,
+            charging.charging,
+            charging.fast_charging,
+            charging.vbus_powered,
+            format_brief_metrics(vbus, batt)
+        );
+
+        self.last_mains_soc = Some(batt.percent);
+        self.last_mains_charge_state = Some(charging.charge_state);
     }
 
     fn refresh_thermal_if_needed(&mut self, now: Instant) {
@@ -433,7 +490,7 @@ impl<T: UpsDevice> UpsHatMonitor<T> {
 
 fn format_brief_metrics(vbus: VbusData, batt: BatteryData) -> String {
     format!(
-        "vbus={:.2}V/{}mA/{}mW batt={:.2}V/{:+}mA soc={}%% t_dis={}m t_chg={}m",
+        "vbus_v={:.2} vbus_ma={} vbus_mw={} batt_v={:.2} batt_ma={:+} soc={} t_dis_min={} t_chg_min={}",
         vbus.voltage_mv as f64 / 1000.0,
         vbus.current_ma,
         vbus.power_mw,
